@@ -131,7 +131,7 @@ def month_grade(rest_fact, exp_plan):
 # ── /start ────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот бюджета Мушацких 💪\n\nЧто делаем?",
+        "👋 Привет! Я бот бюджета Мушат 💪\n\nЧто делаем?",
         reply_markup=MAIN_KB
     )
     return ConversationHandler.END
