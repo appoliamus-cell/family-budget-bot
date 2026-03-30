@@ -496,4 +496,17 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    
+    class PingHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, *args):
+            pass
+    
+    t = threading.Thread(target=lambda: HTTPServer(("0.0.0.0", 8080), PingHandler).serve_forever(), daemon=True)
+    t.start()
     main()
