@@ -6,19 +6,19 @@ from telegram.ext import (Application, CommandHandler, MessageHandler,
                            filters, ContextTypes, ConversationHandler)
 import gspread
 from google.oauth2.service_account import Credentials
-
+ 
 logging.basicConfig(level=logging.INFO)
-
+ 
 BOT_TOKEN  = os.environ["BOT_TOKEN"]
 SHEET_ID   = os.environ["SHEET_ID"]
 CREDS_JSON = os.environ["GOOGLE_CREDS"]
-
+ 
 # ── STATES ────────────────────────────────────────────────────────────────
 (WAITING_CAT_ADD, WAITING_AMOUNT_ADD,
  WAITING_CAT_DEL, WAITING_AMOUNT_DEL,
  WAITING_INCOME_WHO, WAITING_INCOME_AMT,
  WAITING_CAT_REST, WAITING_REST_AMT) = range(8)
-
+ 
 # ── KEYBOARDS ─────────────────────────────────────────────────────────────
 MAIN_KB = ReplyKeyboardMarkup([
     ["➕ Добавить трату",  "➖ Удалить трату"],
@@ -27,9 +27,9 @@ MAIN_KB = ReplyKeyboardMarkup([
     ["🔁 Повторить",       "📋 Последние траты"],
     ["🔄 Ввести остаток"],
 ], resize_keyboard=True)
-
+ 
 CANCEL_KB = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
-
+ 
 CATS_KB = ReplyKeyboardMarkup([
     ["🏠 Аренда",          "🏠 Газ",             "🏠 Свет"],
     ["🍔 Еда",             "🛍️ Досуг",           "🧖 Сауна"],
@@ -41,12 +41,12 @@ CATS_KB = ReplyKeyboardMarkup([
     ["💳 Айфоны",          "💳 Макбук",           "💰 Инвестиции"],
     ["💳 Кларна",          "❌ Отмена"],
 ], resize_keyboard=True)
-
+ 
 INCOME_KB = ReplyKeyboardMarkup([
     ["👨 Женя зп",        "👩 Поля зп"],
     ["💵 Поля кэш (USD)", "❌ Отмена"],
 ], resize_keyboard=True)
-
+ 
 # ── ТОЧНАЯ КАРТА СТРОК (проверено по файлу) ───────────────────────────────
 # Колонки: C=3(план), D=4(факт), E=5(остаток)
 # Доходы
@@ -54,7 +54,7 @@ ROW_ZHENIA_INC  = 7
 ROW_POLIA_INC   = 8
 ROW_CASH_INC    = 9
 ROW_INC_TOT     = 10  # ИТОГО ДОХОДЫ — D10
-
+ 
 # Расходы
 ROWS = {
     "🏠 Аренда":          14,
@@ -99,24 +99,24 @@ ROWS = {
     "💰 Инвестиции":      53,
     "💳 Кларна":          54,
 }
-
+ 
 ROW_EXP_TOT = 55   # ИТОГО РАСХОДЫ
 ROW_BALANCE  = 56  # ОСТАТОК
-
+ 
 COL_PLAN = 3  # колонка C
 COL_FACT = 4  # колонка D
-
+ 
 INCOME_ROWS_MAP = {
     "👨 Женя зп":        (ROW_ZHENIA_INC, "Женя зп"),
     "👩 Поля зп":        (ROW_POLIA_INC,  "Поля зп"),
     "💵 Поля кэш (USD)": (ROW_CASH_INC,   "Поля кэш"),
 }
-
+ 
 BTN_MAP = {k: k for k in ROWS.keys()}
-
+ 
 last_action = {}
 last_5      = {}
-
+ 
 # ── SHEETS ────────────────────────────────────────────────────────────────
 def get_sheet():
     d = json.loads(CREDS_JSON)
@@ -124,7 +124,7 @@ def get_sheet():
         d, scopes=["https://spreadsheets.google.com/feeds",
                    "https://www.googleapis.com/auth/drive"])
     return gspread.authorize(creds).open_by_key(SHEET_ID).worksheet("Month")
-
+ 
 def get_val(ws, row, col):
     """Читает значение ячейки. Возвращает float или 0.0."""
     try:
@@ -134,65 +134,73 @@ def get_val(ws, row, col):
         s = str(v).strip().replace('\xa0', '').replace(' ', '')
         if s in ('', '-', 'None', 'nan'):
             return 0.0
-        cleaned = s.replace(',', '.')
-        result = float(cleaned)
+        # Умная обработка запятой:
+        # если после запятой 3 цифры → разделитель тысяч (3,850 → 3850)
+        # если после запятой 1-2 цифры → десятичный знак (19,99 → 19.99)
+        if ',' in s and '.' not in s:
+            parts = s.split(',')
+            if len(parts[-1]) == 3:
+                s = s.replace(',', '')  # убираем разделитель тысяч
+            else:
+                s = s.replace(',', '.')  # меняем на десятичную точку
+        result = float(s)
         import math
         if math.isnan(result) or math.isinf(result):
             return 0.0
         return result
     except Exception:
         return 0.0
-
+ 
 def set_val(ws, row, val):
     """Записывает значение в колонку D (Факт)."""
     ws.update_cell(row, COL_FACT, val)
-
+ 
 def days_left():
     t = datetime.now()
     return max(1, calendar.monthrange(t.year, t.month)[1] - t.day + 1)
-
+ 
 def check_warning(ws, row, cat):
     plan = get_val(ws, row, COL_PLAN)
     fact = get_val(ws, row, COL_FACT)
     if plan > 0 and fact / plan >= 0.8:
         return f"⚠️ *{cat}* уже {int(fact/plan*100)}% от бюджета!"
     return None
-
+ 
 def month_grade(rest):
     if rest > 0:   return "🏆 Молодцы! Уложились в бюджет!"
     if rest > -500: return "😅 Почти! Небольшой перерасход."
     return "😬 Перерасход в этом месяце."
-
+ 
 # ── /start ────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот Семьи Мушат 💪\n\nЧто делаем?",
         reply_markup=MAIN_KB)
     return ConversationHandler.END
-
+ 
 # ── ГЛАВНОЕ МЕНЮ ──────────────────────────────────────────────────────────
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t   = update.message.text
     cid = update.effective_chat.id
-
+ 
     if t == "➕ Добавить трату":
         await update.message.reply_text("Выбери категорию:", reply_markup=CATS_KB)
         return WAITING_CAT_ADD
-
+ 
     if t == "➖ Удалить трату":
         await update.message.reply_text("Из какой категории удалить?", reply_markup=CATS_KB)
         return WAITING_CAT_DEL
-
+ 
     if t == "💰 Внести доход":
         await update.message.reply_text("Чей доход?", reply_markup=INCOME_KB)
         return WAITING_INCOME_WHO
-
+ 
     if t == "🔄 Ввести остаток":
         await update.message.reply_text(
             "Выбери категорию — введёшь сколько *осталось*, я посчитаю сколько потрачено:",
             parse_mode="Markdown", reply_markup=CATS_KB)
         return WAITING_CAT_REST
-
+ 
     if t == "📊 Остатки":        await cmd_остатки(update)
     elif t == "💡 На сегодня":   await cmd_per_day(update)
     elif t == "📅 Итого за месяц": await cmd_итого(update)
@@ -200,9 +208,9 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif t == "📋 Последние траты": await cmd_last5(update, cid)
     elif t == "❌ Отмена":
         await update.message.reply_text("Окей 👌", reply_markup=MAIN_KB)
-
+ 
     return ConversationHandler.END
-
+ 
 # ── ДОБАВИТЬ ТРАТУ ────────────────────────────────────────────────────────
 async def pick_cat_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
@@ -217,7 +225,7 @@ async def pick_cat_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"*{cat}* — сколько?", parse_mode="Markdown", reply_markup=CANCEL_KB)
     return WAITING_AMOUNT_ADD
-
+ 
 async def enter_amount_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t   = update.message.text
     cid = update.effective_chat.id
@@ -231,7 +239,7 @@ async def enter_amount_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Введи только число, например *320*",
             parse_mode="Markdown", reply_markup=CANCEL_KB)
         return WAITING_AMOUNT_ADD
-
+ 
     cat = context.user_data.get("cat")
     row = ROWS.get(cat)
     try:
@@ -255,7 +263,7 @@ async def enter_amount_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(e)
         await update.message.reply_text("❌ Ошибка записи.", reply_markup=MAIN_KB)
     return ConversationHandler.END
-
+ 
 # ── УДАЛИТЬ ТРАТУ ─────────────────────────────────────────────────────────
 async def pick_cat_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
@@ -270,7 +278,7 @@ async def pick_cat_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"*{cat}* — сколько удалить?", parse_mode="Markdown", reply_markup=CANCEL_KB)
     return WAITING_AMOUNT_DEL
-
+ 
 async def enter_amount_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
     if t == "❌ Отмена":
@@ -295,7 +303,7 @@ async def enter_amount_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(e)
         await update.message.reply_text("❌ Ошибка.", reply_markup=MAIN_KB)
     return ConversationHandler.END
-
+ 
 # ── ВВЕСТИ ОСТАТОК (обратная формула) ─────────────────────────────────────
 async def pick_cat_rest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
@@ -318,7 +326,7 @@ async def pick_cat_rest(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"*{cat}* — сколько осталось?",
             parse_mode="Markdown", reply_markup=CANCEL_KB)
     return WAITING_REST_AMT
-
+ 
 async def enter_rest_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
     if t == "❌ Отмена":
@@ -348,7 +356,7 @@ async def enter_rest_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(e)
         await update.message.reply_text("❌ Ошибка.", reply_markup=MAIN_KB)
     return ConversationHandler.END
-
+ 
 # ── ВНЕСТИ ДОХОД ──────────────────────────────────────────────────────────
 async def pick_income_who(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
@@ -363,7 +371,7 @@ async def pick_income_who(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"*{info[1]}* — сколько?", parse_mode="Markdown", reply_markup=CANCEL_KB)
     return WAITING_INCOME_AMT
-
+ 
 async def enter_income_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
     if t == "❌ Отмена":
@@ -385,16 +393,15 @@ async def enter_income_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(e)
         await update.message.reply_text("❌ Ошибка.", reply_markup=MAIN_KB)
     return ConversationHandler.END
-
+ 
 # ── ОСТАТКИ ───────────────────────────────────────────────────────────────
 async def cmd_остатки(update: Update):
     try:
         ws    = get_sheet()
         lines = ["📊 *Остатки:*\n"]
         for cat, row in ROWS.items():
-            plan = get_val(ws, row, COL_PLAN)
-            fact = get_val(ws, row, COL_FACT)
-            rest = plan - fact
+            # Читаем колонку E (Остаток) — там уже посчитано план-факт формулой таблицы
+            rest = get_val(ws, row, 5)
             if rest > 0:
                 lines.append(f"{cat} — {rest:.0f} PLN")
         if len(lines) == 1:
@@ -404,7 +411,7 @@ async def cmd_остатки(update: Update):
     except Exception as e:
         logging.error(e)
         await update.message.reply_text("❌ Ошибка.", reply_markup=MAIN_KB)
-
+ 
 # ── НА СЕГОДНЯ (per day) ──────────────────────────────────────────────────
 async def cmd_per_day(update: Update):
     try:
@@ -428,7 +435,7 @@ async def cmd_per_day(update: Update):
     except Exception as e:
         logging.error(e)
         await update.message.reply_text("❌ Ошибка.", reply_markup=MAIN_KB)
-
+ 
 # ── ИТОГО ─────────────────────────────────────────────────────────────────
 async def cmd_итого(update: Update):
     try:
@@ -446,7 +453,7 @@ async def cmd_итого(update: Update):
     except Exception as e:
         logging.error(e)
         await update.message.reply_text("❌ Ошибка.", reply_markup=MAIN_KB)
-
+ 
 # ── ПОВТОРИТЬ ─────────────────────────────────────────────────────────────
 async def cmd_repeat(update: Update, cid: int):
     act = last_action.get(cid)
@@ -468,7 +475,7 @@ async def cmd_repeat(update: Update, cid: int):
     except Exception as e:
         logging.error(e)
         await update.message.reply_text("❌ Ошибка.", reply_markup=MAIN_KB)
-
+ 
 # ── ПОСЛЕДНИЕ ТРАТЫ ───────────────────────────────────────────────────────
 async def cmd_last5(update: Update, cid: int):
     hist = last_5.get(cid, [])
@@ -481,7 +488,7 @@ async def cmd_last5(update: Update, cid: int):
         lines.append(f"• {cat} — {amt:.0f} PLN")
     await update.message.reply_text(
         "\n".join(lines), parse_mode="Markdown", reply_markup=MAIN_KB)
-
+ 
 # ── ВЕБ-СЕРВЕР (UptimeRobot) ──────────────────────────────────────────────
 class PingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -490,10 +497,10 @@ class PingHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
     def log_message(self, *args):
         pass
-
+ 
 def run_web_server():
     HTTPServer(("0.0.0.0", 8080), PingHandler).serve_forever()
-
+ 
 # ── MAIN ──────────────────────────────────────────────────────────────────
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -514,7 +521,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
     app.run_polling(drop_pending_updates=True)
-
+ 
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
     main()
+ 
