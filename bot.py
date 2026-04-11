@@ -294,7 +294,7 @@ async def enter_comment_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today = datetime.now().strftime("%d.%m.%Y")
         # Найдём первую пустую строку начиная с 3
       all_vals = ws_prochee.col_values(1)
-next_row = max(3, len([v for v in all_vals if v]) + 1)
+    next_row = max(3, len([v for v in all_vals if v]) + 1)
         ws_prochee.update_cell(next_row, 1, today)
         ws_prochee.update_cell(next_row, 2, amount)
         ws_prochee.update_cell(next_row, 3, comment)
