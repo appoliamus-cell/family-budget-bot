@@ -465,7 +465,9 @@ async def cmd_остатки(update: Update):
         ws    = get_sheet()
         lines = ["📊 *Остатки:*\n"]
         for cat, row in ROWS.items():
-            rest = get_val(ws, row, COL_REST)
+            plan = get_val(ws, row, COL_PLAN)
+            fact = get_val(ws, row, COL_FACT)
+            rest = plan - fact
             if rest > 0:
                 lines.append(f"{cat} — {rest:.0f} PLN")
         if len(lines) == 1:
@@ -482,11 +484,15 @@ async def cmd_per_day(update: Update):
         left = days_left()
         lines = [f"💡 *На сегодня* (осталось {left} дн.)\n"]
         for row, label in [(28, "🍔 Еда"), (29, "🛍️ Досуг"), (39, "🎲 Прочее")]:
-            rest = get_val(ws, row, COL_REST)
+            plan = get_val(ws, row, COL_PLAN)
+            fact = get_val(ws, row, COL_FACT)
+            rest = plan - fact
             pd   = rest / left
             lines.append(f"{'✅' if pd >= 0 else '⚠️'} {label} — *{pd:.0f} PLN/день*")
         # Общий остаток
-        rest_total = get_val(ws, ROW_BALANCE, COL_REST)
+        inc_f = get_val(ws, ROW_INC_TOT, COL_FACT)
+        exp_f = get_val(ws, ROW_EXP_TOT, COL_FACT)
+        rest_total = inc_f - exp_f
         pd_total   = rest_total / left
         lines.append(f"{'✅' if pd_total >= 0 else '⚠️'} 💰 Остаток — *{pd_total:.0f} PLN/день*")
         await update.message.reply_text(
