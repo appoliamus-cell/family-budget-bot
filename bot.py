@@ -309,7 +309,8 @@ async def _save_fact(update, context, cid, cat, amount, comment):
         cur = get_val(ws, row, COL_FACT)
         new = cur + amount
         set_fact(ws, row, new)
-        rest = get_val(ws, row, COL_REST)
+        plan = get_val(ws, row, COL_PLAN)
+        rest = plan - new
         flag = "✅" if rest >= 0 else "⚠️"
         msg  = f"✍️ *{cat}* +{amount:.0f} PLN\n{flag} Остаток: {rest:.0f} PLN"
         if comment:
