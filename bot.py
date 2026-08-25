@@ -14,21 +14,32 @@ SHEET_ID   = os.environ["SHEET_ID"]
 CREDS_JSON = os.environ["GOOGLE_CREDS"]
 
 # ── STATES ────────────────────────────────────────────────────────────────
-(WAITING_TYPE,
+(WAITING_BUDGET_MENU, WAITING_MENU_TOP,
+ WAITING_TYPE,
  WAITING_CAT_ADD, WAITING_AMOUNT_ADD, WAITING_COMMENT_ADD,
  WAITING_CAT_DEL, WAITING_AMOUNT_DEL,
  WAITING_INCOME_WHO, WAITING_INCOME_AMT,
  WAITING_CAT_REST, WAITING_REST_AMT,
- WAITING_MENU_WHO, WAITING_MENU_ITEM, WAITING_FINAL_PICK) = range(13)
+ WAITING_MENU_WHO, WAITING_MENU_ITEM, WAITING_FINAL_PICK) = range(15)
 
-# ── KEYBAORDS ─────────────────────────────────────────────────────────────
-MAIN_KB = ReplyKeyboardMarkup([
+# ── KEYBOARDS ─────────────────────────────────────────────────────────────
+TOP_KB = ReplyKeyboardMarkup([
+    ["💰 БЮДЖЕТ", "🍽 МЕНЮ"],
+], resize_keyboard=True)
+
+BUDGET_KB = ReplyKeyboardMarkup([
     ["➕ Добавить трату",  "➖ Удалить трату"],
     ["📊 Остатки",         "💡 На сегодня"],
     ["💰 Внести доход",    "📅 Итого за месяц"],
     ["🔁 Повторить",       "📋 Последние траты"],
     ["🔄 Ввести остаток"],
-    ["🍽 Меню недели"],
+    ["⬅️ Назад"],
+], resize_keyboard=True)
+
+MENU_TOP_KB = ReplyKeyboardMarkup([
+    ["🍽 Выбрать меню недели"],
+    ["🔄 Новая неделя"],
+    ["⬅️ Назад"],
 ], resize_keyboard=True)
 
 CANCEL_KB = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
@@ -114,7 +125,6 @@ INCOME_ROWS_MAP = {
     "💵 Поля кэш (USD)": (9, "Поля кэш"),
 }
 
-# все кнопки категорий
 ALL_CATS = set(ROWS.keys())
 
 last_action = {}
@@ -373,7 +383,6 @@ MENU_CATEGORIES = [
     },
 ]
 
-# Категории, которые не требуют выбора — присутствуют в меню всегда
 MENU_ALWAYS = ["🥚 Яйца", "🍞 Sourdough", "🥜 Орехи / семена"]
 
 MENU_PEOPLE = ["Женя", "Апполинария"]
@@ -434,25 +443,670 @@ def month_grade(rest):
 # ── /start ────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот Семьи Мушат 💪\n\nЧто делаем?",
-        reply_markup=MAIN_KB)
+        "👋 Привет! Я бот Семьи Мушат 💪\n\nВыбери раздел:",
+        reply_markup=TOP_KB)
     return ConversationHandler.END
 
-# ── ГЛАВНОЕ МЕНЮ ──────────────────────────────────────────────────────────
+# ── ГЛАВНЫЙ ЭКРАН (entry point) ────────────────────────────────────────────
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+
+    if t == "💰 БЮДЖЕТ":
+        await update.message.reply_text("Что делаем?", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+
+    if t == "🍽 МЕНЮ":
+        await update.message.reply_text("Что делаем?", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+
+    await update.message.reply_text("Выбери раздел 👇", reply_markup=TOP_KB)
+    return ConversationHandler.END
+
+# ── РАЗДЕЛ БЮДЖЕТ ─────────────────────────────────────────────────────────
+async def budget_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t   = update.message.text
     cid = update.effective_chat.id
 
     if t == "➕ Добавить трату":
-        await update.message.reply_text(
-            "Какой тип траты?", reply_markup=TYPE_KB)
+        await update.message.reply_text("Какой тип траты?", reply_markup=TYPE_KB)
         return WAITING_TYPE
 
     if t == "➖ Удалить трату":
-        await update.message.reply_text(
-            "Какой тип траты удалить?", reply_markup=TYPE_KB)
+        await update.message.reply_text("Какой тип траты удалить?", reply_markup=TYPE_KB)
         context.user_data["action"] = "del"
         return WAITING_TYPE
 
     if t == "🔄 Ввести остаток":
-        await
+        await update.message.reply_text("Какой тип?", reply_markup=TYPE_KB)
+        context.user_data["action"] = "rest"
+        return WAITING_TYPE
+
+    if t == "💰 Внести доход":
+        await update.message.reply_text("Чей доход?", reply_markup=INCOME_KB)
+        return WAITING_INCOME_WHO
+
+    if t == "📊 Остатки":
+        await cmd_остатки(update)
+        return WAITING_BUDGET_MENU
+    if t == "💡 На сегодня":
+        await cmd_per_day(update)
+        return WAITING_BUDGET_MENU
+    if t == "📅 Итого за месяц":
+        await cmd_итого(update)
+        return WAITING_BUDGET_MENU
+    if t == "🔁 Повторить":
+        await cmd_repeat(update, cid)
+        return WAITING_BUDGET_MENU
+    if t == "📋 Последние траты":
+        await cmd_last5(update, cid)
+        return WAITING_BUDGET_MENU
+
+    if t == "⬅️ Назад":
+        await update.message.reply_text("Окей 👌", reply_markup=TOP_KB)
+        return ConversationHandler.END
+
+    await update.message.reply_text("Нажми кнопку 👇", reply_markup=BUDGET_KB)
+    return WAITING_BUDGET_MENU
+
+# ── ВЫБОР ТИПА ────────────────────────────────────────────────────────────
+async def pick_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t      = update.message.text
+    action = context.user_data.get("action", "add")
+
+    if t == "❌ Отмена":
+        context.user_data.clear()
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+
+    if t == "💳 Разовые платежи":
+        kb = RAZOVYE_KB
+    elif t == "🛍️ Частые траты":
+        kb = CHASYE_KB
+    else:
+        await update.message.reply_text("Нажми кнопку 👇", reply_markup=TYPE_KB)
+        return WAITING_TYPE
+
+    if action == "del":
+        await update.message.reply_text("Из какой категории удалить?", reply_markup=kb)
+        return WAITING_CAT_DEL
+    elif action == "rest":
+        await update.message.reply_text(
+            "Выбери категорию — введёшь сколько *осталось*:",
+            parse_mode="Markdown", reply_markup=kb)
+        return WAITING_CAT_REST
+    else:
+        await update.message.reply_text("Выбери категорию:", reply_markup=kb)
+        return WAITING_CAT_ADD
+
+# ── ДОБАВИТЬ ──────────────────────────────────────────────────────────────
+async def pick_cat_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+    if t not in ALL_CATS:
+        await update.message.reply_text("Нажми кнопку 👇")
+        return WAITING_CAT_ADD
+    context.user_data["cat"] = t
+    await update.message.reply_text(
+        f"*{t}* — сколько?", parse_mode="Markdown", reply_markup=CANCEL_KB)
+    return WAITING_AMOUNT_ADD
+
+async def enter_amount_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t   = update.message.text
+    cid = update.effective_chat.id
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+    try:
+        amount = float(t.replace(',', '.'))
+    except ValueError:
+        await update.message.reply_text("Введи только число 👇", reply_markup=CANCEL_KB)
+        return WAITING_AMOUNT_ADD
+
+    context.user_data["amount"] = amount
+    cat = context.user_data.get("cat")
+
+    if cat == "🎲 Прочее":
+        await update.message.reply_text(
+            f"Записала {amount:.0f} PLN. Что это? (напиши коротко)",
+            reply_markup=CANCEL_KB)
+        return WAITING_COMMENT_ADD
+
+    await _save_fact(update, context, cid, cat, amount, comment=None)
+    return WAITING_BUDGET_MENU
+
+async def enter_comment_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t   = update.message.text
+    cid = update.effective_chat.id
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+
+    cat    = context.user_data.get("cat")
+    amount = context.user_data.get("amount", 0)
+    comment = t
+
+    await _save_fact(update, context, cid, cat, amount, comment=comment)
+
+    try:
+        ws_prochee = get_sheet("Прочее")
+        today = datetime.now().strftime("%d.%m.%Y")
+        all_vals = ws_prochee.col_values(1)
+        next_row = max(3, len([v for v in all_vals if v]) + 1)
+        ws_prochee.update_cell(next_row, 1, today)
+        ws_prochee.update_cell(next_row, 2, amount)
+        ws_prochee.update_cell(next_row, 3, comment)
+    except Exception as e:
+        logging.error(f"Прочее sheet error: {e}")
+
+    return WAITING_BUDGET_MENU
+
+async def _save_fact(update, context, cid, cat, amount, comment):
+    row = ROWS.get(cat)
+    try:
+        ws  = get_sheet()
+        cur = get_val(ws, row, COL_FACT)
+        new = cur + amount
+        set_fact(ws, row, new)
+        plan = get_val(ws, row, COL_PLAN)
+        rest = plan - new
+        flag = "✅" if rest >= 0 else "⚠️"
+        msg  = f"✍️ *{cat}* +{amount:.0f} PLN\n{flag} Остаток: {rest:.0f} PLN"
+        if comment:
+            msg += f"\n📝 {comment}"
+        last_action[cid] = (cat, amount)
+        hist = last_5.get(cid, [])
+        hist.insert(0, (cat, amount))
+        last_5[cid] = hist[:5]
+        warn = check_warning(ws, row, cat)
+        if warn:
+            msg += f"\n\n{warn}"
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=BUDGET_KB)
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("❌ Ошибка записи.", reply_markup=BUDGET_KB)
+    context.user_data.clear()
+
+# ── УДАЛИТЬ ───────────────────────────────────────────────────────────────
+async def pick_cat_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+    if t not in ALL_CATS:
+        await update.message.reply_text("Нажми кнопку 👇")
+        return WAITING_CAT_DEL
+    context.user_data["cat"] = t
+    await update.message.reply_text(
+        f"*{t}* — сколько удалить?", parse_mode="Markdown", reply_markup=CANCEL_KB)
+    return WAITING_AMOUNT_DEL
+
+async def enter_amount_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+    try:
+        amount = float(t.replace(',', '.'))
+    except ValueError:
+        await update.message.reply_text("Введи только число", reply_markup=CANCEL_KB)
+        return WAITING_AMOUNT_DEL
+    cat = context.user_data.get("cat")
+    row = ROWS.get(cat)
+    try:
+        ws  = get_sheet()
+        cur = get_val(ws, row, COL_FACT)
+        new = max(0.0, cur - amount)
+        set_fact(ws, row, new)
+        await update.message.reply_text(
+            f"🗑 *{cat}* -{amount:.0f} PLN\nТеперь: {new:.0f} PLN",
+            parse_mode="Markdown", reply_markup=BUDGET_KB)
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("❌ Ошибка.", reply_markup=BUDGET_KB)
+    context.user_data.clear()
+    return WAITING_BUDGET_MENU
+
+# ── ВВЕСТИ ОСТАТОК ────────────────────────────────────────────────────────
+async def pick_cat_rest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+    if t not in ALL_CATS:
+        await update.message.reply_text("Нажми кнопку 👇")
+        return WAITING_CAT_REST
+    context.user_data["cat"] = t
+    try:
+        ws   = get_sheet()
+        plan = get_val(ws, ROWS[t], COL_PLAN)
+        await update.message.reply_text(
+            f"*{t}*\nПлан: {plan:.0f} PLN\nСколько осталось?",
+            parse_mode="Markdown", reply_markup=CANCEL_KB)
+    except Exception:
+        await update.message.reply_text(
+            f"*{t}* — сколько осталось?",
+            parse_mode="Markdown", reply_markup=CANCEL_KB)
+    return WAITING_REST_AMT
+
+async def enter_rest_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+    try:
+        rest_input = float(t.replace(',', '.'))
+    except ValueError:
+        await update.message.reply_text("Введи только число", reply_markup=CANCEL_KB)
+        return WAITING_REST_AMT
+    cat = context.user_data.get("cat")
+    row = ROWS.get(cat)
+    try:
+        ws   = get_sheet()
+        plan = get_val(ws, row, COL_PLAN)
+        fact = plan - rest_input
+        if fact < 0:
+            await update.message.reply_text(
+                f"⚠️ Остаток {rest_input:.0f} больше плана {plan:.0f}\nПроверь цифры!",
+                reply_markup=BUDGET_KB)
+            return WAITING_BUDGET_MENU
+        set_fact(ws, row, fact)
+        await update.message.reply_text(
+            f"✅ *{cat}*\nПлан: {plan:.0f} PLN\nОстаток: {rest_input:.0f} PLN\nЗаписала факт: {fact:.0f} PLN",
+            parse_mode="Markdown", reply_markup=BUDGET_KB)
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("❌ Ошибка.", reply_markup=BUDGET_KB)
+    context.user_data.clear()
+    return WAITING_BUDGET_MENU
+
+# ── ДОХОД ─────────────────────────────────────────────────────────────────
+async def pick_income_who(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+    info = INCOME_ROWS_MAP.get(t)
+    if not info:
+        await update.message.reply_text("Нажми кнопку 👇", reply_markup=INCOME_KB)
+        return WAITING_INCOME_WHO
+    context.user_data["income"] = info
+    await update.message.reply_text(
+        f"*{info[1]}* — сколько?", parse_mode="Markdown", reply_markup=CANCEL_KB)
+    return WAITING_INCOME_AMT
+
+async def enter_income_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=BUDGET_KB)
+        return WAITING_BUDGET_MENU
+    try:
+        amount = float(t.replace(',', '.'))
+    except ValueError:
+        await update.message.reply_text("Введи только число", reply_markup=CANCEL_KB)
+        return WAITING_INCOME_AMT
+    row, name = context.user_data.get("income", (None, None))
+    try:
+        ws = get_sheet()
+        ws.update_cell(row, COL_FACT, amount)
+        await update.message.reply_text(
+            f"💰 *{name}* = {amount:.0f} PLN — записала!",
+            parse_mode="Markdown", reply_markup=BUDGET_KB)
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("❌ Ошибка.", reply_markup=BUDGET_KB)
+    context.user_data.clear()
+    return WAITING_BUDGET_MENU
+
+# ── РАЗДЕЛ МЕНЮ НЕДЕЛИ ────────────────────────────────────────────────────
+async def menu_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+
+    if t == "🍽 Выбрать меню недели":
+        await update.message.reply_text("Кто выбирает?", reply_markup=MENU_WHO_KB)
+        return WAITING_MENU_WHO
+
+    if t == "🔄 Новая неделя":
+        for p in MENU_PEOPLE:
+            menu_selections[p] = {}
+            menu_done[p] = False
+        await update.message.reply_text(
+            "Начали новую неделю — прошлые выборы очищены 🔄", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+
+    if t == "⬅️ Назад":
+        await update.message.reply_text("Окей 👌", reply_markup=TOP_KB)
+        return ConversationHandler.END
+
+    await update.message.reply_text("Нажми кнопку 👇", reply_markup=MENU_TOP_KB)
+    return WAITING_MENU_TOP
+
+def _menu_render_category(context: ContextTypes.DEFAULT_TYPE):
+    m = context.user_data["menu"]
+    cat = MENU_CATEGORIES[m["cat"]]
+    items = cat["items"]
+    need = f"{cat['min']}" + (f"–{cat['max']}" if cat['max'] != cat['min'] else "")
+    lines = [f"{cat['name']} — выбери {need}\n"]
+    for i, it in enumerate(items, start=1):
+        lines.append(f"{i}. {it}")
+    lines.append("\n✍️ Напиши номера через запятую (например: 2, 5, 9)")
+    return "\n".join(lines)
+
+async def pick_menu_who(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        await update.message.reply_text("Окей 👌", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+    if t not in MENU_PEOPLE:
+        await update.message.reply_text("Нажми кнопку 👇", reply_markup=MENU_WHO_KB)
+        return WAITING_MENU_WHO
+    context.user_data["menu"] = {"who": t, "cat": 0, "selected": {}}
+    await update.message.reply_text(
+        f"Погнали, {t}! Вот первая категория 👇\n\n{_menu_render_category(context)}",
+        reply_markup=CANCEL_KB)
+    return WAITING_MENU_ITEM
+
+async def menu_item_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "❌ Отмена":
+        context.user_data.pop("menu", None)
+        await update.message.reply_text("Окей 👌", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+
+    m = context.user_data.get("menu")
+    if not m:
+        await update.message.reply_text("Нажми кнопку 👇", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+
+    cat = MENU_CATEGORIES[m["cat"]]
+    items = cat["items"]
+
+    nums = sorted(set(int(x) for x in re.findall(r"\d+", t)))
+    bad = [n for n in nums if n < 1 or n > len(items)]
+    if not nums or bad:
+        await update.message.reply_text(
+            f"Не поняла номера 🤔 Напиши числа от 1 до {len(items)} через запятую.")
+        return WAITING_MENU_ITEM
+    if not (cat["min"] <= len(nums) <= cat["max"]):
+        need = f"{cat['min']}" + (f"–{cat['max']}" if cat['max'] != cat['min'] else "")
+        await update.message.reply_text(
+            f"Нужно выбрать именно {need} — ты написала {len(nums)}. Попробуй ещё раз 👇")
+        return WAITING_MENU_ITEM
+
+    chosen = [items[n - 1] for n in nums]
+    if cat.get("always_extra"):
+        chosen.append(cat["always_extra"])
+    m["selected"][cat["key"]] = chosen
+
+    return await _menu_advance_category(update, context)
+
+async def _menu_advance_category(update, context):
+    """Переходит к следующей категории или финиширует опрос этого человека."""
+    m = context.user_data["menu"]
+    m["cat"] += 1
+    if m["cat"] >= len(MENU_CATEGORIES):
+        who = m["who"]
+        menu_selections[who] = m["selected"]
+        menu_done[who] = True
+        context.user_data.pop("menu", None)
+        await update.message.reply_text(f"Спасибо, {who}! Твой выбор сохранён 🎉")
+        if all(menu_done.values()):
+            return await _menu_start_final(update, context)
+        waiting_for = [p for p in MENU_PEOPLE if not menu_done[p]]
+        await update.message.reply_text(
+            f"Жду ещё: {', '.join(waiting_for)} 👀", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+    await update.message.reply_text(_menu_render_category(context), reply_markup=CANCEL_KB)
+    return WAITING_MENU_ITEM
+
+async def _menu_start_final(update, context):
+    """Проверяет, есть ли категории, где совпало больше вариантов, чем нужно."""
+    need_narrow = []
+    for cat in MENU_CATEGORIES:
+        a = set(menu_selections["Женя"].get(cat["key"], []))
+        b = set(menu_selections["Апполинария"].get(cat["key"], []))
+        core = sorted(a & b)
+        if len(core) > cat["max"]:
+            need_narrow.append({
+                "key": cat["key"], "name": cat["name"],
+                "min": cat["min"], "max": cat["max"], "core": core,
+            })
+    if not need_narrow:
+        await update.message.reply_text(
+            _menu_build_final(), parse_mode="Markdown", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+    context.user_data["final_narrow"] = {"items": need_narrow, "idx": 0, "chosen": {}}
+    await update.message.reply_text(
+        "Есть категории, где совпало больше вариантов, чем нужно — уточним, что оставляем 👇")
+    await update.message.reply_text(_menu_render_narrow(context), reply_markup=CANCEL_KB)
+    return WAITING_FINAL_PICK
+
+def _menu_render_narrow(context: ContextTypes.DEFAULT_TYPE):
+    fn = context.user_data["final_narrow"]
+    item = fn["items"][fn["idx"]]
+    need = f"{item['min']}" + (f"–{item['max']}" if item['max'] != item['min'] else "")
+    lines = [f"{item['name']} — совпало у обоих, но нужно оставить {need}:\n"]
+    for i, d in enumerate(item["core"], start=1):
+        lines.append(f"{i}. {d}")
+    lines.append("\n✍️ Напиши номера через запятую")
+    return "\n".join(lines)
+
+async def final_pick_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    fn = context.user_data.get("final_narrow")
+    if t == "❌ Отмена":
+        context.user_data.pop("final_narrow", None)
+        await update.message.reply_text("Окей 👌", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+    if not fn:
+        await update.message.reply_text("Нажми кнопку 👇", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+
+    item = fn["items"][fn["idx"]]
+    core = item["core"]
+    nums = sorted(set(int(x) for x in re.findall(r"\d+", t)))
+    bad = [n for n in nums if n < 1 or n > len(core)]
+    if not nums or bad:
+        await update.message.reply_text(
+            f"Не поняла номера 🤔 Напиши числа от 1 до {len(core)} через запятую.")
+        return WAITING_FINAL_PICK
+    if not (item["min"] <= len(nums) <= item["max"]):
+        need = f"{item['min']}" + (f"–{item['max']}" if item['max'] != item['min'] else "")
+        await update.message.reply_text(
+            f"Нужно оставить именно {need} — ты написала {len(nums)}. Попробуй ещё раз 👇")
+        return WAITING_FINAL_PICK
+
+    fn["chosen"][item["key"]] = [core[n - 1] for n in nums]
+    fn["idx"] += 1
+    if fn["idx"] >= len(fn["items"]):
+        final_text = _menu_build_final(narrow=fn["chosen"])
+        context.user_data.pop("final_narrow", None)
+        await update.message.reply_text(final_text, parse_mode="Markdown", reply_markup=MENU_TOP_KB)
+        return WAITING_MENU_TOP
+    await update.message.reply_text(_menu_render_narrow(context), reply_markup=CANCEL_KB)
+    return WAITING_FINAL_PICK
+
+def _menu_person_block(who: str, emoji: str) -> str:
+    lines = [f"\n{emoji} *Выбор — {who}:*"]
+    has_any = False
+    for cat in MENU_CATEGORIES:
+        picks = menu_selections[who].get(cat["key"], [])
+        if not picks:
+            continue
+        has_any = True
+        lines.append(f"\n{cat['name']}:")
+        for d in picks:
+            lines.append(f"  • {d}")
+    if not has_any:
+        lines.append("(пусто)")
+    return "\n".join(lines)
+
+def _menu_build_final(narrow=None):
+    """narrow — необязательный dict {cat_key: [выбранные из совпавших]},
+    используется, если совпадений было больше, чем позволяет категория."""
+    narrow = narrow or {}
+
+    lines = ["🎉 *Меню недели готово!*"]
+    lines.append(_menu_person_block("Женя", "👨"))
+    lines.append(_menu_person_block("Апполинария", "👩"))
+
+    lines.append("\n\n✅ *Итоговое меню (совпадения):*")
+    any_discuss = False
+    for cat in MENU_CATEGORIES:
+        a = set(menu_selections["Женя"].get(cat["key"], []))
+        b = set(menu_selections["Апполинария"].get(cat["key"], []))
+        core = set(narrow[cat["key"]]) if cat["key"] in narrow else (a & b)
+        only_a = a - b
+        only_b = b - a
+        if not (core or only_a or only_b):
+            continue
+        lines.append(f"\n{cat['name']}:")
+        for d in sorted(core):
+            lines.append(f"  ✅ {d}")
+        for d in sorted(only_a):
+            lines.append(f"  🟡 {d} (только Женя)")
+            any_discuss = True
+        for d in sorted(only_b):
+            lines.append(f"  🟡 {d} (только Апполинария)")
+            any_discuss = True
+    lines.append("\nВсегда в меню: " + ", ".join(MENU_ALWAYS) + ".")
+    if any_discuss:
+        lines.append("\n🟡 — совпадений нет, решите вручную кто прав 🙂")
+    return "\n".join(lines)
+
+# ── ИНФОРМАЦИЯ ────────────────────────────────────────────────────────────
+async def cmd_остатки(update: Update):
+    try:
+        ws    = get_sheet()
+        lines = ["📊 *Остатки:*\n"]
+        for cat, row in ROWS.items():
+            plan = get_val(ws, row, COL_PLAN)
+            fact = get_val(ws, row, COL_FACT)
+            rest = plan - fact
+            if rest > 0:
+                lines.append(f"{cat} — {rest:.0f} PLN")
+        if len(lines) == 1:
+            lines.append("Всё потрачено 🎉")
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="Markdown", reply_markup=BUDGET_KB)
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("❌ Ошибка.", reply_markup=BUDGET_KB)
+
+async def cmd_per_day(update: Update):
+    try:
+        ws   = get_sheet()
+        left = days_left()
+        lines = [f"💡 *На сегодня* (осталось {left} дн.)\n"]
+        for row, label in [(28, "🍔 Еда"), (29, "🛍️ Досуг"), (39, "🎲 Прочее")]:
+            plan = get_val(ws, row, COL_PLAN)
+            fact = get_val(ws, row, COL_FACT)
+            rest = plan - fact
+            pd   = rest / left
+            lines.append(f"{'✅' if pd >= 0 else '⚠️'} {label} — *{pd:.0f} PLN/день*")
+        inc_f = get_val(ws, ROW_INC_TOT, COL_FACT)
+        exp_f = get_val(ws, ROW_EXP_TOT, COL_FACT)
+        rest_total = inc_f - exp_f
+        pd_total   = rest_total / left
+        lines.append(f"{'✅' if pd_total >= 0 else '⚠️'} 💰 Остаток — *{pd_total:.0f} PLN/день*")
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="Markdown", reply_markup=BUDGET_KB)
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("❌ Ошибка.", reply_markup=BUDGET_KB)
+
+async def cmd_итого(update: Update):
+    try:
+        ws    = get_sheet()
+        inc_p = get_val(ws, ROW_INC_TOT, COL_PLAN)
+        inc_f = get_val(ws, ROW_INC_TOT, COL_FACT)
+        exp_p = get_val(ws, ROW_EXP_TOT, COL_PLAN)
+        exp_f = get_val(ws, ROW_EXP_TOT, COL_FACT)
+        rest  = inc_f - exp_f
+        msg = (f"📅 *Итого за месяц:*\n\n"
+               f"💵 Доходы: {inc_f:.0f} / {inc_p:.0f} PLN\n"
+               f"📤 Расходы: {exp_f:.0f} / {exp_p:.0f} PLN\n"
+               f"💰 Остаток: *{rest:.0f} PLN*\n\n{month_grade(rest)}")
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=BUDGET_KB)
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("❌ Ошибка.", reply_markup=BUDGET_KB)
+
+async def cmd_repeat(update: Update, cid: int):
+    act = last_action.get(cid)
+    if not act:
+        await update.message.reply_text("Нет последней траты 🤷", reply_markup=BUDGET_KB)
+        return
+    cat, amount = act
+    row = ROWS.get(cat)
+    try:
+        ws  = get_sheet()
+        cur = get_val(ws, row, COL_FACT)
+        new = cur + amount
+        set_fact(ws, row, new)
+        rest = get_val(ws, row, COL_REST)
+        await update.message.reply_text(
+            f"🔁 *{cat}* +{amount:.0f} PLN\n✅ Остаток: {rest:.0f} PLN",
+            parse_mode="Markdown", reply_markup=BUDGET_KB)
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("❌ Ошибка.", reply_markup=BUDGET_KB)
+
+async def cmd_last5(update: Update, cid: int):
+    hist = last_5.get(cid, [])
+    if not hist:
+        await update.message.reply_text("Пока нет трат 🤷", reply_markup=BUDGET_KB)
+        return
+    lines = ["📋 *Последние траты:*\n"]
+    for cat, amt in hist:
+        lines.append(f"• {cat} — {amt:.0f} PLN")
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode="Markdown", reply_markup=BUDGET_KB)
+
+# ── ВЕБ-СЕРВЕР ────────────────────────────────────────────────────────────
+class PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, *args):
+        pass
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    HTTPServer(("0.0.0.0", port), PingHandler).serve_forever()
+
+# ── MAIN ──────────────────────────────────────────────────────────────────
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, menu)],
+        states={
+            WAITING_BUDGET_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, budget_menu)],
+            WAITING_MENU_TOP:    [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_top)],
+            WAITING_TYPE:        [MessageHandler(filters.TEXT & ~filters.COMMAND, pick_type)],
+            WAITING_CAT_ADD:     [MessageHandler(filters.TEXT & ~filters.COMMAND, pick_cat_add)],
+            WAITING_AMOUNT_ADD:  [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_amount_add)],
+            WAITING_COMMENT_ADD: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_comment_add)],
+            WAITING_CAT_DEL:     [MessageHandler(filters.TEXT & ~filters.COMMAND, pick_cat_del)],
+            WAITING_AMOUNT_DEL:  [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_amount_del)],
+            WAITING_INCOME_WHO:  [MessageHandler(filters.TEXT & ~filters.COMMAND, pick_income_who)],
+            WAITING_INCOME_AMT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_income_amt)],
+            WAITING_CAT_REST:    [MessageHandler(filters.TEXT & ~filters.COMMAND, pick_cat_rest)],
+            WAITING_REST_AMT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_rest_amt)],
+            WAITING_MENU_WHO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, pick_menu_who)],
+            WAITING_MENU_ITEM:   [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_item_answer)],
+            WAITING_FINAL_PICK:  [MessageHandler(filters.TEXT & ~filters.COMMAND, final_pick_answer)],
+        },
+        fallbacks=[CommandHandler("start", start)],
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv)
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    threading.Thread(target=run_web_server, daemon=True).start()
+    main()
