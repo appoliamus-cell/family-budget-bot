@@ -20,7 +20,7 @@ CREDS_JSON = os.environ["GOOGLE_CREDS"]
  WAITING_CAT_DEL, WAITING_AMOUNT_DEL,
  WAITING_INCOME_WHO, WAITING_INCOME_AMT,
  WAITING_CAT_REST, WAITING_REST_AMT,
- WAITING_MENU_WHO, WAITING_MENU_ITEM, WAITING_FINAL_PICK) = range(15)
+ WAITING_MENU_WHO, WAITING_MENU_ITEM) = range(14)
 
 # ── KEYBOARDS ─────────────────────────────────────────────────────────────
 TOP_KB = ReplyKeyboardMarkup([
@@ -852,7 +852,9 @@ async def _menu_advance_category(update, context):
         context.user_data.pop("menu", None)
         await update.message.reply_text(f"Спасибо, {who}! Твой выбор сохранён 🎉")
         if all(menu_done.values()):
-            return await _menu_start_final(update, context)
+            await update.message.reply_text(
+                _menu_build_final(), parse_mode="Markdown", reply_markup=MENU_TOP_KB)
+            return WAITING_MENU_TOP
         waiting_for = [p for p in MENU_PEOPLE if not menu_done[p]]
         await update.message.reply_text(
             f"Жду ещё: {', '.join(waiting_for)} 👀", reply_markup=MENU_TOP_KB)
@@ -860,119 +862,23 @@ async def _menu_advance_category(update, context):
     await update.message.reply_text(_menu_render_category(context), reply_markup=CANCEL_KB)
     return WAITING_MENU_ITEM
 
-async def _menu_start_final(update, context):
-    """Проверяет, есть ли категории, где совпало больше вариантов, чем нужно."""
-    need_narrow = []
+def _menu_build_final():
+    """Правило простое: где выбор совпал — берём совпавшее.
+    Где не совпал — окончательное слово за Апполинарией."""
+    lines = ["🎉 *Меню недели:*"]
     for cat in MENU_CATEGORIES:
-        a = set(menu_selections["Женя"].get(cat["key"], []))
-        b = set(menu_selections["Апполинария"].get(cat["key"], []))
-        core = sorted(a & b)
-        if len(core) > cat["max"]:
-            need_narrow.append({
-                "key": cat["key"], "name": cat["name"],
-                "min": cat["min"], "max": cat["max"], "core": core,
-            })
-    if not need_narrow:
-        await update.message.reply_text(
-            _menu_build_final(), parse_mode="Markdown", reply_markup=MENU_TOP_KB)
-        return WAITING_MENU_TOP
-    context.user_data["final_narrow"] = {"items": need_narrow, "idx": 0, "chosen": {}}
-    await update.message.reply_text(
-        "Есть категории, где совпало больше вариантов, чем нужно — уточним, что оставляем 👇")
-    await update.message.reply_text(_menu_render_narrow(context), reply_markup=CANCEL_KB)
-    return WAITING_FINAL_PICK
-
-def _menu_render_narrow(context: ContextTypes.DEFAULT_TYPE):
-    fn = context.user_data["final_narrow"]
-    item = fn["items"][fn["idx"]]
-    need = f"{item['min']}" + (f"–{item['max']}" if item['max'] != item['min'] else "")
-    lines = [f"{item['name']} — совпало у обоих, но нужно оставить {need}:\n"]
-    for i, d in enumerate(item["core"], start=1):
-        lines.append(f"{i}. {d}")
-    lines.append("\n✍️ Напиши номера через запятую")
-    return "\n".join(lines)
-
-async def final_pick_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t = update.message.text
-    fn = context.user_data.get("final_narrow")
-    if t == "❌ Отмена":
-        context.user_data.pop("final_narrow", None)
-        await update.message.reply_text("Окей 👌", reply_markup=MENU_TOP_KB)
-        return WAITING_MENU_TOP
-    if not fn:
-        await update.message.reply_text("Нажми кнопку 👇", reply_markup=MENU_TOP_KB)
-        return WAITING_MENU_TOP
-
-    item = fn["items"][fn["idx"]]
-    core = item["core"]
-    nums = sorted(set(int(x) for x in re.findall(r"\d+", t)))
-    bad = [n for n in nums if n < 1 or n > len(core)]
-    if not nums or bad:
-        await update.message.reply_text(
-            f"Не поняла номера 🤔 Напиши числа от 1 до {len(core)} через запятую.")
-        return WAITING_FINAL_PICK
-    if not (item["min"] <= len(nums) <= item["max"]):
-        need = f"{item['min']}" + (f"–{item['max']}" if item['max'] != item['min'] else "")
-        await update.message.reply_text(
-            f"Нужно оставить именно {need} — ты написала {len(nums)}. Попробуй ещё раз 👇")
-        return WAITING_FINAL_PICK
-
-    fn["chosen"][item["key"]] = [core[n - 1] for n in nums]
-    fn["idx"] += 1
-    if fn["idx"] >= len(fn["items"]):
-        final_text = _menu_build_final(narrow=fn["chosen"])
-        context.user_data.pop("final_narrow", None)
-        await update.message.reply_text(final_text, parse_mode="Markdown", reply_markup=MENU_TOP_KB)
-        return WAITING_MENU_TOP
-    await update.message.reply_text(_menu_render_narrow(context), reply_markup=CANCEL_KB)
-    return WAITING_FINAL_PICK
-
-def _menu_person_block(who: str, emoji: str) -> str:
-    lines = [f"\n{emoji} *Выбор — {who}:*"]
-    has_any = False
-    for cat in MENU_CATEGORIES:
-        picks = menu_selections[who].get(cat["key"], [])
-        if not picks:
+        her = menu_selections["Апполинария"].get(cat["key"], [])
+        his = menu_selections["Женя"].get(cat["key"], [])
+        if not her and not his:
             continue
-        has_any = True
+        resolved = her if her else his  # если она не выбирала (не должно случаться) — берём его
+        his_set = set(his)
         lines.append(f"\n{cat['name']}:")
-        for d in picks:
-            lines.append(f"  • {d}")
-    if not has_any:
-        lines.append("(пусто)")
-    return "\n".join(lines)
-
-def _menu_build_final(narrow=None):
-    """narrow — необязательный dict {cat_key: [выбранные из совпавших]},
-    используется, если совпадений было больше, чем позволяет категория."""
-    narrow = narrow or {}
-
-    lines = ["🎉 *Меню недели готово!*"]
-    lines.append(_menu_person_block("Женя", "👨"))
-    lines.append(_menu_person_block("Апполинария", "👩"))
-
-    lines.append("\n\n✅ *Итоговое меню (совпадения):*")
-    any_discuss = False
-    for cat in MENU_CATEGORIES:
-        a = set(menu_selections["Женя"].get(cat["key"], []))
-        b = set(menu_selections["Апполинария"].get(cat["key"], []))
-        core = set(narrow[cat["key"]]) if cat["key"] in narrow else (a & b)
-        only_a = a - b
-        only_b = b - a
-        if not (core or only_a or only_b):
-            continue
-        lines.append(f"\n{cat['name']}:")
-        for d in sorted(core):
-            lines.append(f"  ✅ {d}")
-        for d in sorted(only_a):
-            lines.append(f"  🟡 {d} (только Женя)")
-            any_discuss = True
-        for d in sorted(only_b):
-            lines.append(f"  🟡 {d} (только Апполинария)")
-            any_discuss = True
+        for d in resolved:
+            tag = "✅" if d in his_set else "👩"
+            lines.append(f"  {tag} {d}")
     lines.append("\nВсегда в меню: " + ", ".join(MENU_ALWAYS) + ".")
-    if any_discuss:
-        lines.append("\n🟡 — совпадений нет, решите вручную кто прав 🙂")
+    lines.append("\n✅ — выбрали оба · 👩 — решающее слово за Апполинарией")
     return "\n".join(lines)
 
 # ── ИНФОРМАЦИЯ ────────────────────────────────────────────────────────────
@@ -1098,7 +1004,6 @@ def main():
             WAITING_REST_AMT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_rest_amt)],
             WAITING_MENU_WHO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, pick_menu_who)],
             WAITING_MENU_ITEM:   [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_item_answer)],
-            WAITING_FINAL_PICK:  [MessageHandler(filters.TEXT & ~filters.COMMAND, final_pick_answer)],
         },
         fallbacks=[CommandHandler("start", start)],
     )
