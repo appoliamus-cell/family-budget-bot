@@ -768,11 +768,25 @@ async def menu_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_MENU_WHO
 
     if t == "🔄 Новая неделя":
-        for p in MENU_PEOPLE:
-            menu_selections[p] = {}
-            menu_done[p] = False
+        status = ", ".join(f"{p} {'✅' if menu_done[p] else '❌'}" for p in MENU_PEOPLE)
+        context.user_data["confirm_reset"] = True
         await update.message.reply_text(
-            "Начали новую неделю — прошлые выборы очищены 🔄", reply_markup=MENU_TOP_KB)
+            f"Сейчас: {status}\n"
+            "Точно сбросить и начать неделю заново? Это сотрёт выбор обоих, даже если кто-то уже закончил.",
+            reply_markup=ReplyKeyboardMarkup(
+                [["✅ Да, сбросить", "❌ Не надо"]], resize_keyboard=True))
+        return WAITING_MENU_TOP
+
+    if context.user_data.get("confirm_reset"):
+        context.user_data.pop("confirm_reset", None)
+        if t == "✅ Да, сбросить":
+            for p in MENU_PEOPLE:
+                menu_selections[p] = {}
+                menu_done[p] = False
+            await update.message.reply_text(
+                "Начали новую неделю — прошлые выборы очищены 🔄", reply_markup=MENU_TOP_KB)
+        else:
+            await update.message.reply_text("Окей, ничего не трогала 👌", reply_markup=MENU_TOP_KB)
         return WAITING_MENU_TOP
 
     if t == "⬅️ Назад":
